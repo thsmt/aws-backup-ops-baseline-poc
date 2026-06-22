@@ -40,6 +40,14 @@
     "ParameterValue": "true"
   },
   {
+    "ParameterKey": "BackupSkipTagKey",
+    "ParameterValue": "BackupSkip"
+  },
+  {
+    "ParameterKey": "BackupSkipTagValue",
+    "ParameterValue": "true"
+  },
+  {
     "ParameterKey": "EnableEventBridgeFailureRule",
     "ParameterValue": "true"
   },
