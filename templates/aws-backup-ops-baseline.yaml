@@ -1,0 +1,394 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS Backup operations baseline with tag-based backup selection and failure notifications.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Naming
+        Parameters:
+          - ProjectName
+          - EnvironmentName
+      - Label:
+          default: Backup plan
+        Parameters:
+          - BackupScheduleExpression
+          - BackupScheduleTimezone
+          - BackupRetentionDays
+          - BackupStartWindowMinutes
+          - BackupCompletionWindowMinutes
+          - EnableContinuousBackup
+      - Label:
+          default: Backup target selection
+        Parameters:
+          - BackupTargetTagKey
+          - BackupTargetTagValue
+      - Label:
+          default: Notifications
+        Parameters:
+          - EnableEventBridgeFailureRule
+          - CreateEmailSubscription
+          - NotificationEmail
+      - Label:
+          default: Vault lock
+        Parameters:
+          - VaultLockMode
+          - VaultLockMinRetentionDays
+          - VaultLockMaxRetentionDays
+          - VaultLockChangeableForDays
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: aws-backup-ops-baseline-poc
+    MinLength: 3
+    MaxLength: 30
+    AllowedPattern: ^[a-z0-9][a-z0-9-]*[a-z0-9]$
+    Description: Prefix for resource names. Use lowercase letters, numbers, and hyphens.
+
+  EnvironmentName:
+    Type: String
+    Default: poc
+    AllowedValues:
+      - poc
+      - stg
+      - prod
+    Description: Environment identifier.
+
+  BackupScheduleExpression:
+    Type: String
+    Default: cron(0 3 * * ? *)
+    Description: Backup schedule expression.
+
+  BackupScheduleTimezone:
+    Type: String
+    Default: Asia/Tokyo
+    Description: Time zone for the backup schedule expression.
+
+  BackupRetentionDays:
+    Type: Number
+    Default: 35
+    MinValue: 1
+    MaxValue: 36500
+    Description: Number of days to retain recovery points.
+
+  BackupStartWindowMinutes:
+    Type: Number
+    Default: 60
+    MinValue: 60
+    Description: Start window in minutes. AWS Backup requires at least 60 minutes.
+
+  BackupCompletionWindowMinutes:
+    Type: Number
+    Default: 360
+    MinValue: 60
+    Description: Completion window in minutes.
+
+  EnableContinuousBackup:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable continuous backup for supported resource types.
+
+  BackupTargetTagKey:
+    Type: String
+    Default: Backup
+    MinLength: 1
+    MaxLength: 128
+    Description: Tag key used to select backup target resources.
+
+  BackupTargetTagValue:
+    Type: String
+    Default: 'true'
+    MinLength: 1
+    MaxLength: 256
+    Description: Tag value used to select backup target resources.
+
+  EnableEventBridgeFailureRule:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Create an EventBridge rule for AWS Backup failure events.
+
+  CreateEmailSubscription:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Create an email subscription for the SNS topic.
+
+  NotificationEmail:
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|^[^@\s]+@[^@\s]+\.[^@\s]+$
+    Description: Email address for SNS notifications. Required when CreateEmailSubscription is true.
+
+  VaultLockMode:
+    Type: String
+    Default: none
+    AllowedValues:
+      - none
+      - governance
+      - compliance
+    Description: Backup Vault Lock mode. Compliance mode becomes immutable after ChangeableForDays.
+
+  VaultLockMinRetentionDays:
+    Type: Number
+    Default: 7
+    MinValue: 1
+    MaxValue: 36500
+    Description: Minimum retention days enforced by Vault Lock.
+
+  VaultLockMaxRetentionDays:
+    Type: Number
+    Default: 365
+    MinValue: 1
+    MaxValue: 36500
+    Description: Maximum retention days enforced by Vault Lock.
+
+  VaultLockChangeableForDays:
+    Type: Number
+    Default: 3
+    MinValue: 3
+    MaxValue: 36500
+    Description: Cooling-off period for compliance mode.
+
+Conditions:
+  CreateEmailSubscriptionCondition: !Equals [!Ref CreateEmailSubscription, 'true']
+  EnableEventBridgeFailureRuleCondition: !Equals [!Ref EnableEventBridgeFailureRule, 'true']
+  EnableContinuousBackupCondition: !Equals [!Ref EnableContinuousBackup, 'true']
+  EnableVaultLockCondition: !Not [!Equals [!Ref VaultLockMode, none]]
+  UseComplianceVaultLockCondition: !Equals [!Ref VaultLockMode, compliance]
+
+Resources:
+  BackupVaultKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub KMS key for ${ProjectName}-${EnvironmentName} AWS Backup vault.
+      EnableKeyRotation: true
+      PendingWindowInDays: 7
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableIamUserPermissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${EnvironmentName}-backup-key
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  BackupVaultKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/${ProjectName}-${EnvironmentName}-backup-vault
+      TargetKeyId: !Ref BackupVaultKey
+
+  BackupServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-${EnvironmentName}-backup-role
+      Description: IAM role used by AWS Backup to back up selected resources.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: backup.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup
+        - arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores
+        - arn:aws:iam::aws:policy/AWSBackupServiceRolePolicyForS3Backup
+        - arn:aws:iam::aws:policy/AWSBackupServiceRolePolicyForS3Restore
+      Policies:
+        - PolicyName: !Sub ${ProjectName}-${EnvironmentName}-backup-kms-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowUseOfBackupVaultKey
+                Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncrypt*
+                  - kms:GenerateDataKey*
+                  - kms:CreateGrant
+                  - kms:ListGrants
+                  - kms:RevokeGrant
+                Resource: !GetAtt BackupVaultKey.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${EnvironmentName}-backup-role
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  BackupNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${ProjectName}-${EnvironmentName}-backup-alerts
+      DisplayName: !Sub ${ProjectName}-${EnvironmentName}-backup-alerts
+      KmsMasterKeyId: alias/aws/sns
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${EnvironmentName}-backup-alerts
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  BackupNotificationTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref BackupNotificationTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEventBridgePublish
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref BackupNotificationTopic
+            Condition:
+              StringEquals:
+                AWS:SourceAccount: !Ref AWS::AccountId
+
+  BackupEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: CreateEmailSubscriptionCondition
+    Properties:
+      TopicArn: !Ref BackupNotificationTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  BackupVault:
+    Type: AWS::Backup::BackupVault
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BackupVaultName: !Sub ${ProjectName}-${EnvironmentName}-vault
+      EncryptionKeyArn: !GetAtt BackupVaultKey.Arn
+      LockConfiguration: !If
+        - EnableVaultLockCondition
+        - MinRetentionDays: !Ref VaultLockMinRetentionDays
+          MaxRetentionDays: !Ref VaultLockMaxRetentionDays
+          ChangeableForDays: !If
+            - UseComplianceVaultLockCondition
+            - !Ref VaultLockChangeableForDays
+            - !Ref AWS::NoValue
+        - !Ref AWS::NoValue
+      BackupVaultTags:
+        Name: !Sub ${ProjectName}-${EnvironmentName}-vault
+        Project: !Ref ProjectName
+        Environment: !Ref EnvironmentName
+
+  BackupPlan:
+    Type: AWS::Backup::BackupPlan
+    Properties:
+      BackupPlan:
+        BackupPlanName: !Sub ${ProjectName}-${EnvironmentName}-plan
+        BackupPlanRule:
+          - RuleName: !Sub ${ProjectName}-${EnvironmentName}-daily
+            TargetBackupVault: !Ref BackupVault
+            ScheduleExpression: !Ref BackupScheduleExpression
+            ScheduleExpressionTimezone: !Ref BackupScheduleTimezone
+            StartWindowMinutes: !Ref BackupStartWindowMinutes
+            CompletionWindowMinutes: !Ref BackupCompletionWindowMinutes
+            EnableContinuousBackup: !If
+              - EnableContinuousBackupCondition
+              - true
+              - false
+            Lifecycle:
+              DeleteAfterDays: !Ref BackupRetentionDays
+            RecoveryPointTags:
+              Project: !Ref ProjectName
+              Environment: !Ref EnvironmentName
+              ManagedBy: CloudFormation
+      BackupPlanTags:
+        Project: !Ref ProjectName
+        Environment: !Ref EnvironmentName
+
+  BackupSelection:
+    Type: AWS::Backup::BackupSelection
+    Properties:
+      BackupPlanId: !Ref BackupPlan
+      BackupSelection:
+        SelectionName: !Sub ${ProjectName}-${EnvironmentName}-tag-selection
+        IamRoleArn: !GetAtt BackupServiceRole.Arn
+        Conditions:
+          StringEquals:
+            - ConditionKey: !Sub aws:ResourceTag/${BackupTargetTagKey}
+              ConditionValue: !Ref BackupTargetTagValue
+
+  BackupFailureEventRule:
+    Type: AWS::Events::Rule
+    Condition: EnableEventBridgeFailureRuleCondition
+    Properties:
+      Name: !Sub ${ProjectName}-${EnvironmentName}-backup-failure-rule
+      Description: Send AWS Backup failure events to SNS.
+      EventPattern:
+        source:
+          - aws.backup
+        detail-type:
+          - Backup Job State Change
+          - Copy Job State Change
+          - Restore Job State Change
+        detail:
+          state:
+            - FAILED
+            - EXPIRED
+            - ABORTED
+      State: ENABLED
+      Targets:
+        - Id: BackupFailureNotificationTopic
+          Arn: !Ref BackupNotificationTopic
+          InputTransformer:
+            InputPathsMap:
+              account: $.account
+              detailType: $.detail-type
+              region: $.region
+              state: $.detail.state
+              statusMessage: $.detail.statusMessage
+              time: $.time
+            InputTemplate: '"AWS Backup event: <detailType> state=<state> account=<account> region=<region> time=<time> message=<statusMessage>"'
+
+Outputs:
+  BackupVaultName:
+    Description: Backup vault name.
+    Value: !Ref BackupVault
+
+  BackupVaultArn:
+    Description: Backup vault ARN.
+    Value: !GetAtt BackupVault.BackupVaultArn
+
+  BackupPlanId:
+    Description: Backup plan ID.
+    Value: !Ref BackupPlan
+
+  BackupServiceRoleArn:
+    Description: IAM role ARN used by AWS Backup.
+    Value: !GetAtt BackupServiceRole.Arn
+
+  NotificationTopicArn:
+    Description: SNS topic ARN for AWS Backup notifications.
+    Value: !Ref BackupNotificationTopic
+
+  BackupTargetTag:
+    Description: Tag condition for backup target resources.
+    Value: !Sub ${BackupTargetTagKey}=${BackupTargetTagValue}

@@ -1,0 +1,10 @@
+*.log
+*.tmp
+
+# Local parameter files may contain environment-specific values.
+parameters/*.json
+!parameters/*.example.json
+
+# OS files
+.DS_Store
+Thumbs.db

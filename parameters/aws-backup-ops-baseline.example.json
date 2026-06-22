@@ -1,0 +1,70 @@
+[
+  {
+    "ParameterKey": "ProjectName",
+    "ParameterValue": "aws-backup-ops-baseline-poc"
+  },
+  {
+    "ParameterKey": "EnvironmentName",
+    "ParameterValue": "poc"
+  },
+  {
+    "ParameterKey": "BackupScheduleExpression",
+    "ParameterValue": "cron(0 3 * * ? *)"
+  },
+  {
+    "ParameterKey": "BackupScheduleTimezone",
+    "ParameterValue": "Asia/Tokyo"
+  },
+  {
+    "ParameterKey": "BackupRetentionDays",
+    "ParameterValue": "35"
+  },
+  {
+    "ParameterKey": "BackupStartWindowMinutes",
+    "ParameterValue": "60"
+  },
+  {
+    "ParameterKey": "BackupCompletionWindowMinutes",
+    "ParameterValue": "360"
+  },
+  {
+    "ParameterKey": "EnableContinuousBackup",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "BackupTargetTagKey",
+    "ParameterValue": "Backup"
+  },
+  {
+    "ParameterKey": "BackupTargetTagValue",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "EnableEventBridgeFailureRule",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "CreateEmailSubscription",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "NotificationEmail",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "VaultLockMode",
+    "ParameterValue": "none"
+  },
+  {
+    "ParameterKey": "VaultLockMinRetentionDays",
+    "ParameterValue": "7"
+  },
+  {
+    "ParameterKey": "VaultLockMaxRetentionDays",
+    "ParameterValue": "365"
+  },
+  {
+    "ParameterKey": "VaultLockChangeableForDays",
+    "ParameterValue": "3"
+  }
+]
